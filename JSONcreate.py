@@ -1,8 +1,133 @@
 import json
 
 from LLMAPIs import get_response
+from pydantic import BaseModel
 
-def get_json(model, notes):
+class PatientInfo(BaseModel):
+    patient_info: dict
+    visit_motivation: str
+
+class Symptoms(BaseModel):
+    symptoms: list[str]
+
+class VitalSigns(BaseModel):
+    blood_pressure: dict | None
+    heart_rate: dict | None
+    oxygen_saturation: dict | None
+    cholesterol_level: dict | None
+    glucose_level: dict | None
+    temperature: dict | None
+    respiratory_rate: dict | None
+
+def get_json_segment(model, notes):
+    visit_motivation = get_response(model,f"""
+    You are a strict information extraction system.
+    Extract only the explicitly stated or directly implied information.
+    Each visit_motivation must be one of the listed options.
+    Return ONLY valid JSON (no extra text).
+
+    Schema:
+    {{
+    "patient_info": {{
+        "age": <number>,
+        "gender": "Male" | "Female"
+    }},
+    "visit_motivation": <string>  # single best matching condition from the list below
+    }}
+
+    Possible values for "visit_motivation" are:
+    ["Anemia", "Allergies", "Diabetes (Type 2)", "Tuberculosis (TB)", "Depression", "Asthma",
+    "Hypertension (High Blood Pressure)", "Influenza (Flu)", "Anxiety Disorders", 
+    "Gastroesophageal Reflux Disease (GERD)", "Heart Disease (Coronary Artery Disease)", 
+    "Pneumonia", "Urinary Tract Infection (UTI)", "Common Cold", "Ear Infection (Otitis Media)",
+    "Eczema (Atopic Dermatitis)", "COVID-19", "Strep Throat", "Sinusitis", "Chronic Obstructive Pulmonary Disease (COPD)"]
+
+    ---
+    Medical Note:
+    {notes}
+    """,
+    format=PatientInfo)
+    
+    symptoms = get_response(model,f"""
+You are a strict information extraction system.
+
+Extract only the information that is explicitly stated or directly implied in the following medical note. 
+If a field or value is not mentioned, omit it completely from the JSON output. 
+Do NOT infer, guess, or add information that is not in the note.
+
+Return ONLY valid JSON (no text before or after).
+
+    Respond ONLY with valid JSON in this format:
+    {{ "symptoms": [<list of symptoms>] }}
+
+    Possible symptoms:
+    ["abdominal_pain", "anxiety", "blurred_vision", "chest_pain", "cough", "diarrhea", 
+    "difficulty_breathing", "difficulty_concentrating", "dizziness", "dry_skin", "ear_pain", 
+    "facial_pain", "fatigue", "fever", "frequent_urination", "headache", "heartburn", 
+    "increased_thirst", "itchy_eyes", "joint_pain", "loss_of_taste_smell", "nausea", 
+    "night_sweats", "painful_urination", "pale_skin", "rash", "restlessness", "runny_nose", 
+    "sadness", "sneezing", "sore_throat", "swollen_lymph_nodes", "vomiting", "weight_loss", "wheezing"]
+
+    ---
+    Medical Note:
+    {notes}
+    """,
+    format=Symptoms)
+
+    vital_signs = get_response(model,f"""
+You are a strict information extraction system.
+
+Extract only the information that is explicitly stated or directly implied in the following medical note. 
+If a field or value is not mentioned, omit it completely from the JSON output. 
+Do NOT infer, guess, or add information that is not in the note.
+
+Return ONLY valid JSON (no text before or after).
+
+    Schema:
+    {{
+    "vital_signs": {{
+        "blood_pressure": {{
+        "systolic": {{ "value": <number>, "unit": "mmHg" }},
+        "diastolic": {{ "value": <number>, "unit": "mmHg" }}
+        }},
+        "heart_rate": {{ "value": <number>, "unit": "bpm" }},
+        "oxygen_saturation": {{ "value": <number>, "unit": "%" }},
+        "cholesterol_level": {{ "value": <number>, "unit": "mg/dL" }},
+        "glucose_level": {{ "value": <number>, "unit": "mg/dL" }},
+        "temperature": {{ "value": <number>, "unit": "°C" }},
+        "respiratory_rate": {{ "value": <number>, "unit": "breaths/min" }}
+    }}
+    }}
+
+    ---
+    Medical Note:
+    {notes}
+    """,
+    format=VitalSigns)
+
+    visit_motivation_json = json.loads(visit_motivation.model_dump_json())
+    symptoms_json = json.loads(symptoms.model_dump_json())
+    vital_signs_json = json.loads(vital_signs.model_dump_json())
+
+    vital_signs_json = {
+        key: value for key, value in vital_signs_json.items()
+        if value is not None  # Remove direct None values like "temperature": None
+        and value != {}  # Remove empty dicts
+        and not (isinstance(value, dict) and value.get('value') is None)  # Remove nested None values
+    }
+
+    # Combine into a single response object
+    response = {
+        **visit_motivation_json,  # Contains "patient_info" and "visit_motivation"
+        **symptoms_json,          # Contains "symptoms"
+        "vital_signs": vital_signs_json        # Contains "vital_signs"
+    }
+
+    return json.dumps(response, separators=(',', ':'))
+
+
+
+def get_json_full(model, notes):
     response = get_response(model, f"""
 You are a strict information extraction system.
 
@@ -56,9 +181,6 @@ Medical Notes:
 {notes}
 """)
     
-    # For vital signs that have null values, remove them from the JSON
-
-    # Try parsing the JSON safely
     try:
         data = json.loads(response)
     except json.JSONDecodeError:
@@ -101,43 +223,4 @@ Medical Notes:
 
     # Validate correct JSON
     return json.dumps(data, separators=(',', ':'))
-
-
-# {"patient_info":
-#  {"age": 41, "gender": "Male"},
-#  "visit_motivation": "Anemia",
-#  "symptoms": ["fever", "fatigue", "difficulty_breathing", "vomiting", "dizziness", "blurred_vision", "wheezing", "pale_skin"],
-#  "vital_signs":{
-#     "heart_rate": {"value": 114, "unit": "bpm"},
-#     "oxygen_saturation": {"value": 98.4, "unit": "%"},
-#     "cholesterol_level": {"value": 132.8, "unit": "mg/dL"},
-#     "glucose_level": {"value": 110.6, "unit": "mg/dL"}
-#     }}
-
-# {"patient_info"
-# {"age": 56, "gender": "Male"},
-# "visit_motivation": "Allergies",
-# "symptoms": ["runny_nose", "sneezing", "itchy_eyes", "blurred_vision", "wheezing"],
-# "vital_signs":{
-#     "temperature": {"value": 36.6, "unit": "\u00b0C"},
-#     "respiratory_rate": {"value": 13, "unit": "breaths/min"},
-#     "glucose_level": {"value": 99.0, "unit": "mg/dL"}
-# }}
-
-    # age = get_response(model, "Only return the age of patient: " + medData)
-    # gender = get_response(model, "Only return the gender of patient: " + medData)
-    # visit_motivation = get_response(model, "Only return the visit motivation of patient: " + medData)
-    # symptoms = get_response(model, "Only return the symptoms of patient as a python string list: " + medData)
-    # vital_signs = get_response(model, "Only return a python list of all vital signs recorded from options" \
-    #                                   "'heart_rate', 'oxygen_saturation', 'cholesterol_level', 'glucose_level', 'temperature', 'respiratory_rate', : " + medData)
-
-    # # Process vital_signs into a list to iterate through
-    # vital_signs_list = vital_signs.strip("[]").split(", ")
-    # for vital_sign in vital_signs_list:
-    #     value = get_response(model, f"Only return the value of {vital_sign} as a number: " + medData)
-    #     unit = get_response(model, f"Only return the unit of {vital_sign}: " + medData)
-    #     vital_signs = vital_signs.replace(vital_sign, f'"{vital_sign}": {{"value": {value}, "unit": "{unit}"}}')
-
-    # # Stich together all variables into a JSON string
-    # json_string = f'{{"patient_info": {{"age": {age}, "gender": "{gender}"}}, "visit_motivation": "{visit_motivation}", "symptoms": {symptoms}, "vital_signs": {{{vital_signs}}}}}'
 
