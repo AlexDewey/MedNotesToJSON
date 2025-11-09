@@ -11,15 +11,19 @@ def get_response(model, system_prompt, user_prompt, format=None):
             },
             {
                 'role': 'user',
-                'content': f'{user_prompt}',
+                'content': f'{user_prompt}'
             },
             ])
         return response.message.content
     else:
         response: ChatResponse = chat(model=model, messages=[
         {
+            'role': 'system',
+            'content': f'{system_prompt}'
+        },
+        {
             'role': 'user',
-            'content': f'{user_prompt}',
+            'content': f'{user_prompt}'
         },
         ],
         format=format.model_json_schema())

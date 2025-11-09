@@ -126,58 +126,108 @@ Return ONLY valid JSON (no text before or after).
     return json.dumps(response, separators=(',', ':'))
 
 def get_json_full(model, notes):
-    response = get_response(model, f"""
-You are a strict information extraction system.
+    response = get_response(model, system_prompt="""
+You are a medical information extraction AI. Convert unstructured clinical notes into a STRICT JSON object that conforms to the schema and rules below.
 
-Extract only the information that is explicitly stated or directly implied in the following medical note. 
-If a field or value is not mentioned, omit it completely from the JSON output. 
-Do NOT infer, guess, or add information that is not in the note.
+OVERALL CONTRACT
+- Parse ONLY what is explicitly stated in the notes.
+- Do NOT infer, diagnose, or guess.
+- Output MUST be a single valid JSON object (UTF-8), with no comments, no surrounding prose, and no code fences.
+- Omit any field that is unavailable or not explicitly present.
+- Use exact enum values and exact units as specified.
 
-Return ONLY valid JSON (no text before or after).
+SCHEMA (allowed keys and shapes)
+{
+  "patient_info": {
+    "age": number,
+    "gender": "Female" | "Male"
+  },
+  "visit_motivation": one of [
+    "Allergies","Anemia","Anxiety Disorders","Asthma","COVID-19",
+    "Chronic Obstructive Pulmonary Disease (COPD)","Common Cold","Depression",
+    "Diabetes (Type 2)","Ear Infection (Otitis Media)","Eczema (Atopic Dermatitis)",
+    "Gastroesophageal Reflux Disease (GERD)","Heart Disease (Coronary Artery Disease)",
+    "Hypertension (High Blood Pressure)","Influenza (Flu)","Pneumonia",
+    "Sinusitis","Strep Throat","Tuberculosis (TB)","Urinary Tract Infection (UTI)"
+  ],
+  "symptoms": array of strings, each item must be exactly one of:
+    [
+      "abdominal_pain","anxiety","blurred_vision","chest_pain","cough","diarrhea",
+      "difficulty_breathing","difficulty_concentrating","dizziness","dry_skin",
+      "ear_pain","facial_pain","fatigue","fever","frequent_urination","headache",
+      "heartburn","increased_thirst","itchy_eyes","joint_pain","loss_of_taste_smell",
+      "nausea","night_sweats","painful_urination","pale_skin","rash","restlessness",
+      "runny_nose","sadness","sneezing","sore_throat","swollen_lymph_nodes",
+      "vomiting","weight_loss","wheezing"
+    ],
+  "vital_signs": {
+    "temperature": { "value": number, "unit": "°C" | "°F" },
+    "blood_pressure": {
+      "systolic":  { "value": number, "unit": "mmHg" },
+      "diastolic": { "value": number, "unit": "mmHg" }
+    },
+    "heart_rate":        { "value": number, "unit": "bpm" },
+    "respiratory_rate":  { "value": number, "unit": "breaths/min" },
+    "oxygen_saturation": { "value": number, "unit": "%" },
+    "glucose_level":     { "value": number, "unit": "mg/dL" },
+    "cholesterol_level": { "value": number, "unit": "mg/dL" }
+  }
+}
 
-Use this schema:
-{{
-  "patient_info": {{
-    "age": <number>,
-    "gender": "Male" | "Female"
-  }},
-  "visit_motivation": <string>,  # single best matching condition from the list below
-  "symptoms": [<list of mentioned symptoms>],
-  "vital_signs": {{
-    "blood_pressure": {{
-      "systolic": {{ "value": <number>, "unit": "mmHg" }},
-      "diastolic": {{ "value": <number>, "unit": "mmHg" }}
-    }},
-    "heart_rate": {{ "value": <number>, "unit": "bpm" }},
-    "oxygen_saturation": {{ "value": <number>, "unit": "%" }},
-    "cholesterol_level": {{ "value": <number>, "unit": "mg/dL" }},
-    "glucose_level": {{ "value": <number>, "unit": "mg/dL" }},
-    "temperature": {{ "value": <number>, "unit": "°C" }},
-    "respiratory_rate": {{ "value": <number>, "unit": "breaths/min" }}
-  }}
-}}
+CRITICAL RULES
+1. Output ONLY a JSON object — no prose, no code fences, no comments.
+2. Include ONLY keys from the schema (patient_info, visit_motivation, symptoms, vital_signs).
+3. Use proper nested objects — never dotted keys.
+4. Extract values ONLY if explicitly stated in the notes. Do not infer.
+5. ABSOLUTELY NO null/NULL/None anywhere in the JSON. If a value is unknown, OMIT the entire key.
+6. Do NOT emit placeholder values (0, -1, "", NaN, Infinity) for missing data.
+7. Arrays (like symptoms) must not be empty; if no items, omit the array entirely.
+8. Numeric fields must be numbers, not strings.
+9. Ensure valid JSON formatting.
 
-Only include vital sign entries that appear in the note; if neither systolic nor diastolic pressure is given, omit "blood_pressure" entirely.
+ATOMICITY (vital_signs)
+- Emit a measurement ONLY if you have ALL required subfields:
+  - temperature: value AND unit → otherwise omit.
+  - blood_pressure: BOTH systolic AND diastolic complete → otherwise omit blood_pressure.
+  - heart_rate / respiratory_rate / oxygen_saturation / glucose_level / cholesterol_level:
+    each requires value AND unit; otherwise omit the measurement.
+- If vital_signs is empty after omissions, omit vital_signs.
 
-Possible values for "visit_motivation" are:
-["Anemia", "Allergies", "Diabetes (Type 2)", "Tuberculosis (TB)", "Depression", "Asthma",
-"Hypertension (High Blood Pressure)", "Influenza (Flu)", "Anxiety Disorders", 
-"Gastroesophageal Reflux Disease (GERD)", "Heart Disease (Coronary Artery Disease)", 
-"Pneumonia", "Urinary Tract Infection (UTI)", "Common Cold", "Ear Infection (Otitis Media)",
-"Eczema (Atopic Dermatitis)", "COVID-19", "Strep Throat", "Sinusitis", "Chronic Obstructive Pulmonary Disease (COPD)"]
+SECTION-AWARE, EXHAUSTIVE SCAN
+- Scan ALL parts of the note (header/demographics, chief complaint, HPI, ROS, PMH/PSH, meds, allergies, triage sheet, vitals section, physical exam, assessment/plan, discharge summary, signature/footer, tables/templates).
+- Pay special attention to compact header lines and triage lines.
 
-Possible "symptoms" keys are:
-["abdominal_pain", "anxiety", "blurred_vision", "chest_pain", "cough", "diarrhea", 
-"difficulty_breathing", "difficulty_concentrating", "dizziness", "dry_skin", "ear_pain", 
-"facial_pain", "fatigue", "fever", "frequent_urination", "headache", "heartburn", 
-"increased_thirst", "itchy_eyes", "joint_pain", "loss_of_taste_smell", "nausea", 
-"night_sweats", "painful_urination", "pale_skin", "rash", "restlessness", "runny_nose", 
-"sadness", "sneezing", "sore_throat", "swollen_lymph_nodes", "vomiting", "weight_loss", "wheezing"]
+ROBUST DEMOGRAPHIC PATTERNS (EXPLICIT ONLY; case-insensitive)
+- Age: “56-year-old”, “56 yo”, “56yo”, “56 yrs”, “Age: 56”, “56 y/o”, “56 yr old”, “56 y.o.”
+- Gender tokens/abbreviations:
+  - “Gender: Male/Female”, “Sex: M/F”, solitary “Male”/“Female”, “M”/“F” when adjacent to age or demographic tokens (e.g., “56yo M”, “F, 34 yo”, “M presents with…”).
+  - Titles/pronouns when clearly referring to the patient: “Mr.” → Male; “Mrs.”/“Ms.”/“Miss” → Female; “he/him/his” → Male; “she/her/hers” → Female.
+  - Terms: “man”, “woman” used about the patient.
+- DO NOT infer from names or relationships.
 
----
-Medical Notes:
+DISAMBIGUATION & PRIORITY
+- If conflicting tokens occur, prefer the explicit demographic/header line over narrative mentions; prefer the LAST explicit demographic mention.
+- Pronouns count ONLY if they clearly refer to the patient.
+
+MANDATED SECOND PASS (BEFORE EMITTING JSON)
+- Perform a dedicated re-scan specifically to find gender and age using the above pattern library across headers, triage lines, and signature blocks.
+- If gender or age is explicitly present, you MUST include it in patient_info.
+- If not explicitly present, omit the key(s); do NOT guess.
+
+SELF-AUDIT CHECKLIST (internal)
+- [ ] No null/placeholder values.
+- [ ] Every vital has value+unit; otherwise removed.
+- [ ] Gender/age re-scanned and included if explicitly present.
+- [ ] No empty arrays/objects remain.
+- [ ] JSON parses successfully.
+
+EMPTY OUTPUT
+If no extractable data per schema → return {}
+""", user_prompt=f"""Extract structured medical data from the following clinical note according to the schema and rules defined in the system prompt.
+
+<<<NOTES
 {notes}
-""")
+NOTES""")
     
     try:
         data = json.loads(response)
@@ -220,36 +270,36 @@ Medical Notes:
         data["vital_signs"] = cleaned_vitals
 
     # Validate correct JSON
-    extracted_json = json.dumps(data, separators=(',', ':'))
+    return json.dumps(data, separators=(',', ':'))
 
-    # --- 4. Verification phase: hallucination correction ---
-    verification_prompt = f"""
-You are a verification and correction system for medical data extraction.
+#     # --- 4. Verification phase: hallucination correction ---
+#     verification_prompt = f"""
+# You are a verification and correction system for medical data extraction.
 
-Below is a medical note and an extracted JSON. 
-Your task:
-- Check if every field and value in the JSON is explicitly supported or implied in the note.
-- Remove any hallucinated or unsupported information.
-- If any field is missing but explicitly mentioned, add it.
-- Ensure all vital sign values match the note.
-- Return ONLY the corrected JSON (no text, no comments).
+# Below is a medical note and an extracted JSON. 
+# Your task:
+# - Check if every field and value in the JSON is explicitly supported or implied in the note.
+# - Remove any hallucinated or unsupported information.
+# - If any field is missing but explicitly mentioned, add it.
+# - Ensure all vital sign values match the note.
+# - Return ONLY the corrected JSON (no text, no comments).
 
-Medical Note:
-{notes}
+# Medical Note:
+# {notes}
 
-Extracted JSON:
-{extracted_json}
-"""
+# Extracted JSON:
+# {extracted_json}
+# """
 
-    verification_response = get_response(model, verification_prompt)
+#     verification_response = get_response(model, verification_prompt)
 
-    # --- 5. Final parse + cleanup ---
-    try:
-        verified_data = json.loads(verification_response)
-    except json.JSONDecodeError:
-        start = verification_response.find('{')
-        end = verification_response.rfind('}') + 1
-        verified_str = verification_response[start:end]
-        verified_data = json.loads(verified_str)
+#     # --- 5. Final parse + cleanup ---
+#     try:
+#         verified_data = json.loads(verification_response)
+#     except json.JSONDecodeError:
+#         start = verification_response.find('{')
+#         end = verification_response.rfind('}') + 1
+#         verified_str = verification_response[start:end]
+#         verified_data = json.loads(verified_str)
 
-    return [json.dumps(verified_data, separators=(',', ':')),
+   # return json.dumps(verified_data, separators=(',', ':')),
