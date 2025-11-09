@@ -125,8 +125,6 @@ Return ONLY valid JSON (no text before or after).
 
     return json.dumps(response, separators=(',', ':'))
 
-
-
 def get_json_full(model, notes):
     response = get_response(model, f"""
 You are a strict information extraction system.
@@ -222,5 +220,36 @@ Medical Notes:
         data["vital_signs"] = cleaned_vitals
 
     # Validate correct JSON
-    return json.dumps(data, separators=(',', ':'))
+    extracted_json = json.dumps(data, separators=(',', ':'))
 
+    # --- 4. Verification phase: hallucination correction ---
+    verification_prompt = f"""
+You are a verification and correction system for medical data extraction.
+
+Below is a medical note and an extracted JSON. 
+Your task:
+- Check if every field and value in the JSON is explicitly supported or implied in the note.
+- Remove any hallucinated or unsupported information.
+- If any field is missing but explicitly mentioned, add it.
+- Ensure all vital sign values match the note.
+- Return ONLY the corrected JSON (no text, no comments).
+
+Medical Note:
+{notes}
+
+Extracted JSON:
+{extracted_json}
+"""
+
+    verification_response = get_response(model, verification_prompt)
+
+    # --- 5. Final parse + cleanup ---
+    try:
+        verified_data = json.loads(verification_response)
+    except json.JSONDecodeError:
+        start = verification_response.find('{')
+        end = verification_response.rfind('}') + 1
+        verified_str = verification_response[start:end]
+        verified_data = json.loads(verified_str)
+
+    return [json.dumps(verified_data, separators=(',', ':')),
