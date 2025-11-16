@@ -125,8 +125,8 @@ Return ONLY valid JSON (no text before or after).
 
     return json.dumps(response, separators=(',', ':'))
 
-def get_json_full(model, notes):
-    response = get_response(model, system_prompt="""
+def response_grabber(model, notes):
+    return get_response(model, system_prompt="""
 You are a medical information extraction AI. Convert unstructured clinical notes into a STRICT JSON object that conforms to the schema and rules below.
 
 OVERALL CONTRACT
@@ -228,14 +228,19 @@ If no extractable data per schema → return {}
 <<<NOTES
 {notes}
 NOTES""")
-    
-    try:
-        data = json.loads(response)
-    except json.JSONDecodeError:
-        start = response.find('{')
-        end = response.rfind('}') + 1
-        json_str = response[start:end]
-        data = json.loads(json_str)
+
+def get_json_full(model, notes):
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        response = response_grabber(model, notes)
+        try:
+            data = json.loads(response)
+            break  
+        except json.JSONDecodeError:
+            if attempt == max_attempts - 1:
+                # Last attempt failed
+                raise ValueError(f"Failed to get valid JSON after {max_attempts} attempts")
+            # Loop
 
     # --- Strict vital signs cleanup ---
     if "vital_signs" in data:
@@ -271,35 +276,3 @@ NOTES""")
 
     # Validate correct JSON
     return json.dumps(data, separators=(',', ':'))
-
-#     # --- 4. Verification phase: hallucination correction ---
-#     verification_prompt = f"""
-# You are a verification and correction system for medical data extraction.
-
-# Below is a medical note and an extracted JSON. 
-# Your task:
-# - Check if every field and value in the JSON is explicitly supported or implied in the note.
-# - Remove any hallucinated or unsupported information.
-# - If any field is missing but explicitly mentioned, add it.
-# - Ensure all vital sign values match the note.
-# - Return ONLY the corrected JSON (no text, no comments).
-
-# Medical Note:
-# {notes}
-
-# Extracted JSON:
-# {extracted_json}
-# """
-
-#     verification_response = get_response(model, verification_prompt)
-
-#     # --- 5. Final parse + cleanup ---
-#     try:
-#         verified_data = json.loads(verification_response)
-#     except json.JSONDecodeError:
-#         start = verification_response.find('{')
-#         end = verification_response.rfind('}') + 1
-#         verified_str = verification_response[start:end]
-#         verified_data = json.loads(verified_str)
-
-   # return json.dumps(verified_data, separators=(',', ':')),
